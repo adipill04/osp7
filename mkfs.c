@@ -24,7 +24,16 @@ The size of the inode and data bitmaps are determined by the number of blocks sp
 If mkfs finds that the disk image file is too small to accomodate the number of blocks, it should exit with return code 1.
  mkfs should write the superblock and root inode to the disk image.*/
 
+//helper functions:
+int roundUpByFactor(int num, int factor) {
+    int remainder = num % factor;
+    if (remainder != 0) {
+        num += (factor - remainder);
+    }
+    return num;
+}
 
+//TODO: make sure everything is right : root inode struct initilization, check bitmaps...
 int main(int argc, char * argv[]){
     printf("beg of mkfs\n");
     //1. parse arguments
@@ -48,14 +57,14 @@ int main(int argc, char * argv[]){
                 printf("case i\n");
                 superblock.num_inodes = atoi(optarg); 
                 if(superblock.num_inodes % 32 != 0){       
-                    superblock.num_inodes=(superblock.num_inodes + 31) / 32 * 32;
+                    superblock.num_inodes=roundUpByFactor(superblock.num_inodes, 32);
                 }
                 break;
             case 'b':
                 printf("case b\n");
                 superblock.num_data_blocks = atoi(optarg);
                 if(superblock.num_data_blocks % 32 != 0){
-                    superblock.num_data_blocks=(superblock.num_data_blocks + 31) / 32 * 32;
+                    superblock.num_data_blocks=roundUpByFactor(superblock.num_data_blocks, 32);
                 }
                 break;
             default:
@@ -90,30 +99,31 @@ int main(int argc, char * argv[]){
     }
 
     //map file onto memory, clear values
-    struct wfs_sb * ptr = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    memset(ptr, 0, fileStat.st_size);
+    char* disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    memset(disk, 0, fileStat.st_size);
 
     //add superblock to disk
-    memcpy(ptr, &superblock, sizeof(struct wfs_sb));
+    memcpy(disk, &superblock, sizeof(struct wfs_sb));
     
     //init fields of root inode
     rootInode.num = 0;
-    rootInode.size = BLOCK_SIZE; 
+    rootInode.size = BLOCK_SIZE;
     rootInode.mode =  __S_IFDIR | S_IRWXO;
     rootInode.uid = S_ISUID;
     rootInode.gid = S_ISGID;
 
-    time_t current_time = time(NULL); //check if right
+    time_t current_time;
+    time(&current_time);
     rootInode.atim = current_time; 
     rootInode.mtim = current_time; 
-    //init rootInode.ctim?
+    rootInode.ctim = current_time;
 
     //adding root inode to array 
-    memcpy((off_t*)ptr + superblock.i_blocks_ptr, &rootInode, sizeof(struct wfs_inode));
+    memcpy(disk + superblock.i_blocks_ptr, &rootInode, sizeof(struct wfs_inode));
 
     //updating inode bitmap
-    int numIEntries = ceil(superblock.num_inodes / 32);
-    int numDEntries = ceil(superblock.num_data_blocks / 32);
+    int numIEntries = superblock.num_inodes / 32;
+    int numDEntries = superblock.num_data_blocks / 32;
     int bitmap [numIEntries], dbitmap [numDEntries];
     
     memset(bitmap, 0, sizeof(int) * numIEntries);
@@ -121,8 +131,8 @@ int main(int argc, char * argv[]){
 
     bitmap[0] |= (1 << 0);
 
-    memcpy((off_t*)ptr + superblock.i_bitmap_ptr, bitmap, sizeof(int) * numIEntries); 
-    memcpy((off_t*)ptr + superblock.d_bitmap_ptr, dbitmap, sizeof(int) * numDEntries); 
+    memcpy(disk + superblock.i_bitmap_ptr, bitmap, sizeof(int) * numIEntries); 
+    memcpy(disk + superblock.d_bitmap_ptr, dbitmap, sizeof(int) * numDEntries); 
 
     close(fd);
     return 0;
