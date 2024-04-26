@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stddef.h>
+#include <libgen.h>
 
 //to ask: your doubts, then should we update access times every time we access, is off_t a primitive or pointer type
 char * diskImage;
@@ -19,79 +20,18 @@ char failedgetparent = 0;
 int fd;
 char * disk;
 
-//returns parent dir of file/dir path
-char* get_parent_inode(char * disk, struct wfs_sb * superblock, char * path, int*skipbit){
-    //printf("running helper function get_parent_inode\n\n");
-    //if root just return immediately
-    if(strlen(path) == 1){
-        *skipbit = 1;
-        return disk + superblock->i_blocks_ptr; //returning addr of root inode
-    }
-
-    // setup//////////////////////
-    char * token = strtok(path, "/"); //first token is expected file or dir in root dir
-    int found = 0;
-    int changebit = 0;
-    struct wfs_inode currentInode;
-    char* prevInodeAddr = disk + superblock->i_blocks_ptr;
-    char* currentInodeAddr = disk + superblock->i_blocks_ptr; //starting from root inode 
-    /////////////////////////////////////////////////////////////// 
-    
-    //find target file/dir
-    while(token){ 
-        //printf("file to find: %s       \n ", token);
-    
-        //find directory entry of currentInode
-        memcpy(&currentInode, currentInodeAddr, sizeof(struct wfs_inode));
-        for (int i = 0; i < N_BLOCKS; i++){
-            if(currentInode.blocks[i]){ 
-                struct wfs_dentry dirEntry;
-                memcpy(&dirEntry, disk + currentInode.blocks[i], sizeof(struct wfs_dentry));
-                if (strcmp(dirEntry.name, token) == 0){
-                    found = 1;
-
-                    // grab inode, update currInodeAddr, prevInodeAddr
-                    if(changebit){
-                        prevInodeAddr = currentInodeAddr;
-                    }
-                    else{
-                        changebit++;
-                    }
-                    currentInodeAddr = disk + superblock->i_blocks_ptr + (dirEntry.num * BLOCK_SIZE);
-                    break;
-                }
-            }
-        }
-
-        if(!found){
-            printf("ERROR: file not found\n");
-            failedgetparent = -1;
-            return &failedgetparent;
-        }
-
-        found = 0;
-        token = strtok(NULL, "/");
-    }
-
-    //printf("DONE: get parent inode finished\n");  
-    return prevInodeAddr;
-}
-
 //returns the actual path
 char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*skipbit){
    // printf("running helper function get_path_inode\n\n");
-    //if root just return immediately
+
     if(strlen(path) == 1){
-        *skipbit = 1;
-        return disk + superblock->i_blocks_ptr; //returning addr of root inode
+        return disk + superblock->i_blocks_ptr; //return root 
     }
 
     // setup//////////////////////
     char * token = strtok(path, "/"); //first token is expected file or dir in root dir
     int found = 0;
-    int changebit = 0;
     struct wfs_inode currentInode;
-    //char* prevInodeAddr = disk + superblock->i_blocks_ptr;
     char* currentInodeAddr = disk + superblock->i_blocks_ptr; //starting from root inode 
     /////////////////////////////////////////////////////////////// 
     
@@ -107,14 +47,6 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
                 memcpy(&dirEntry, disk + currentInode.blocks[i], sizeof(struct wfs_dentry));
                 if (strcmp(dirEntry.name, token) == 0){
                     found = 1;
-
-                    // grab inode, update currInodeAddr, prevInodeAddr
-                    if(changebit){
-                        //prevInodeAddr = currentInodeAddr;
-                    }
-                    else{
-                        changebit++;
-                    }
                     currentInodeAddr = disk + superblock->i_blocks_ptr + (dirEntry.num * BLOCK_SIZE);
                     break;
                 }
@@ -122,7 +54,7 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
         }
 
         if(!found){
-            printf("ERROR: file not found\n");
+            printf("ERROR: file not found. Path: %s\n", path);
             failedgetparent = -1;
             return &failedgetparent;
         }
@@ -131,7 +63,7 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
         token = strtok(NULL, "/");
     }
 
-   // printf("DONE: get parent inode finished\n");  
+    printf("DONE: get path inode finished\n");  
     return currentInodeAddr;
 }
 
@@ -142,7 +74,7 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
 
 //Return file attributes. fill stbuf struct
 static int wfs_getattr(const char *path, struct stat *stbuf) {
-
+    printf("WFS_GETATTR: using wfs_getattr\n");
     //setup///////////////////////////////////////
 
     //create path copy since strtok does not work on const char *path
@@ -150,67 +82,24 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
     strcpy(pathCopy, path);
     pathCopy[strlen(path)] = '\0';
 
-   //
-   // printf("starting getattr.  path: %s\n", pathCopy);
-
-    // declarations & error checks
-    // struct stat fileStat;
-    // int fd = open(diskImage, O_RDWR);
-    // if(fd == -1){
-    //     perror("opening file");
-    //     return 1;
-    // }
-    // if(fstat(fd, &fileStat) < 0){ 
-    //     printf("error in stat\n");
-    //     return 1;
-    // }
-    ///////////////////////////////////////////
-    
-   // char * disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-
     //ptr to start of superblock
     struct wfs_sb superblock;
     memcpy(&superblock, disk, sizeof(struct wfs_sb));
-    struct wfs_sb * ptr = &superblock;
+    //struct wfs_sb * ptr = &superblock;
     int skipbit = 0;
 
-    //get the parent inode
-    char* parentInodeAddr = get_parent_inode(disk, &superblock, pathCopy, &skipbit);
-    if(failedgetparent == -1){ //failure case
-        failedgetparent = 0;    
-        return -ENOENT;
-    }
-    if(!skipbit){
-        struct wfs_inode parentInode;
-        memcpy(&parentInode, parentInodeAddr, sizeof(struct wfs_inode));
-        struct wfs_dentry dirEntry;
-        int targetFound = -1;
-        char * targetName = strrchr(path, '/');
-        targetName++;
-
-        //find target directory entry. using this we find target inode
-        for(int i = 0; i < N_BLOCKS; i++){
-            if(parentInode.blocks[i]){
-                memcpy(&dirEntry, disk + parentInode.blocks[i], sizeof(struct wfs_dentry));
-                if(strcmp(dirEntry.name, targetName) == 0){
-                    targetFound = i;
-                    break;
-                }
-            }
-        }
-
-        if(targetFound == -1){
-            return -ENOENT; 
-        }
-    
-
         //get the target inode & update time
+        char *tI = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+        if(failedgetparent == -1){
+            failedgetparent = 0;
+            return -ENOENT;
+        }
         struct wfs_inode targetInode;
-        memcpy(&targetInode, disk + ptr->i_blocks_ptr + (dirEntry.num * BLOCK_SIZE), sizeof(struct wfs_inode));
+        memcpy(&targetInode, tI, sizeof(struct wfs_inode));
         time_t current_time;
         time(&current_time);
         targetInode.atim = current_time; //only accessed, so only changing access time
-        memcpy(disk + ptr->i_blocks_ptr + (dirEntry.num * BLOCK_SIZE), &targetInode, sizeof(struct wfs_inode));
+        memcpy(tI, &targetInode, sizeof(struct wfs_inode));
 
         //fill in stbuf struct with found target inode
         stbuf->st_uid = targetInode.uid;
@@ -219,31 +108,13 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_mtime = targetInode.mtim;
         stbuf->st_mode = targetInode.mode;
         stbuf->st_size = targetInode.size;
-    }
-    else{
-        struct wfs_inode rootInode;
-        memcpy(&rootInode, disk + ptr->i_blocks_ptr, sizeof(struct wfs_inode));
-        time_t current_time;
-        time(&current_time);
-        rootInode.atim = current_time; //only accessed, so only changing access time
-        memcpy(disk + ptr->i_blocks_ptr, &rootInode, sizeof(struct wfs_inode));
 
-        //fill in stbuf struct with found target inode
-        stbuf->st_uid = rootInode.uid;
-        stbuf->st_gid = rootInode.gid;
-        stbuf->st_atime = rootInode.atim;
-        stbuf->st_mtime = rootInode.mtim;
-        stbuf->st_mode = rootInode.mode;
-        stbuf->st_size = rootInode.size;        
-    }
-
-   // close(fd);
-    //printf("DONE: getattr finished\n");     
+    printf("DONE: getattr finished\n");     
     return 0; // Return 0 on success
 }
 
-
 //Make a file 
+//still og mknod unlike mkdir
 static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     //printf("making file using mknod\n");
 
@@ -252,20 +123,6 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     char *pathCopy = malloc(strlen(path) + 1); 
     strcpy(pathCopy, path);
     pathCopy[strlen(path)] = '\0';
-
-    // declarations & error checks
-    // struct stat fileStat;
-    // int fd = open(diskImage, O_RDWR);
-    // if(fd == -1){
-    //     perror("opening file");
-    //     return 1;
-    // }
-    // if(fstat(fd, &fileStat) < 0){ 
-    //     printf("error in stat\n");
-    //     return 1;
-    // }
-    
-    //char * disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     //ptr to start of superblock
     struct wfs_sb superblock;
@@ -431,28 +288,15 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
 
 //Create a directory with the given name. The directory permissions are encoded in mode. 
 //See mkdir(2) for details. This function is needed for any reasonable read/write filesystem.
+//very modified-----!!!!
 static int wfs_mkdir(const char* path, mode_t mode){
-    //printf("making dir using mkdir\n");
+    printf("WFS_MKDIR: using mkdir\n");
 
 //setup ///////////////////////////////
     //create path copy since strtok does not work on const char *path
     char *pathCopy = malloc(strlen(path) + 1); 
     strcpy(pathCopy, path);
     pathCopy[strlen(path)] = '\0';
-
-    // declarations & error checks
-    // struct stat fileStat;
-    // int fd = open(diskImage, O_RDWR);
-    // if(fd == -1){
-    //     perror("opening file");
-    //     return 1;
-    // }
-    // if(fstat(fd, &fileStat) < 0){ 
-    //     printf("error in stat\n");
-    //     return 1;
-    // }
-    
-   // char * disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     //ptr to start of superblock
     struct wfs_sb superblock;
@@ -544,8 +388,7 @@ static int wfs_mkdir(const char* path, mode_t mode){
     //memcpy((off_t)ptr + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize);
 
     //update data blocks with dir entry, write dir entry to data block in disk
-    char * name = strrchr(path, '/');
-    name++;
+    char * name = basename(pathCopy);
     struct wfs_dentry dirEntry;
     strcpy(dirEntry.name, name); 
     dirEntry.num = newDirInode.num;
@@ -553,11 +396,7 @@ static int wfs_mkdir(const char* path, mode_t mode){
     //memcpy((off_t)ptr + ptr->d_blocks_ptr + (off_t)(dindex * BLOCK_SIZE), &dirEntry, sizeof(struct wfs_dentry));
     
     //add dir entry to parent inode
-    char * shortened = strrchr(path, '/');
-    int modifiedPathLength = strlen(path) - strlen(shortened) + 1;
-    char * modifiedPath = malloc(sizeof(char) * modifiedPathLength);
-    strncpy(modifiedPath, path, modifiedPathLength); //eliminated last part of string so we have a valid argument for get_path_inode
-
+    char * modifiedPath = dirname(pathCopy);
     char *pI = get_path_inode(disk, &superblock, modifiedPath, &skipbit);
     if(failedgetparent == -1){ //failure case
         failedgetparent = 0;    
@@ -591,9 +430,6 @@ static int wfs_mkdir(const char* path, mode_t mode){
     memcpy(disk + ptr->d_blocks_ptr + (d2index * BLOCK_SIZE), &dirEntry, sizeof(struct wfs_dentry)); //writing new dir entry to datablocks
     memcpy(pI, &parentInode, sizeof(struct wfs_inode)); //writing parent inode
 
-   // close(fd);
-    //check if anything else
-   // printf("DONE: mkdir finished, file created?\n\n");
     return 0;
 }
 

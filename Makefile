@@ -4,9 +4,9 @@ CFLAGS = -Wall -Werror -pedantic -std=gnu18 -g
 FUSE_CFLAGS = `pkg-config fuse --cflags --libs`
 .PHONY: all
 all: $(BINS)
-wfs:
+wfs: wfs.c
 	$(CC) $(CFLAGS) wfs.c $(FUSE_CFLAGS) -o wfs
-mkfs:
+mkfs: mkfs.c
 	$(CC) $(CFLAGS) -o mkfs mkfs.c
 .PHONY: clean
 clean:
