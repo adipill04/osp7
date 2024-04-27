@@ -86,8 +86,8 @@ int main(int argc, char * argv[]){
 
     //setting offsets
     superblock.i_bitmap_ptr = sizeof(struct wfs_sb); 
-    superblock.d_bitmap_ptr = superblock.i_bitmap_ptr + iBiteSize;
-    superblock.i_blocks_ptr = superblock.d_bitmap_ptr + DBSize;
+    superblock.d_bitmap_ptr = superblock.i_bitmap_ptr + (off_t)iBiteSize;
+    superblock.i_blocks_ptr = superblock.d_bitmap_ptr + (off_t)DBSize;
     superblock.d_blocks_ptr = superblock.i_blocks_ptr + BLOCK_SIZE * superblock.num_inodes; //superblock.i_blocks_ptr + sizeof(struct wfs_inode) * superblock.num_inodes;
 
     //3. adding root dir to disk

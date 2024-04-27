@@ -19,12 +19,40 @@ char * diskImage;
 char failedgetparent = 0;
 int fd;
 char * disk;
+off_t *dirEntryOffsets;
+
+//gets a valid space within a datablock for a dir entry (grouping em all up)
+off_t getValidSpace(struct wfs_inode *parentInode){
+    if(dirEntryOffsets[parentInode->num] == -1){
+        return -2;
+    }
+
+    //go to data block
+    off_t startBlock = dirEntryOffsets[parentInode->num];
+    
+    //skip offset by inode bytes + traverse existing (if there) dirEntires and find open space
+    off_t currOffset = startBlock;
+    struct wfs_dentry entryToPlace = {0};
+
+    while(memcmp(disk + currOffset, &entryToPlace, sizeof(struct wfs_dentry)) != 0 && currOffset < startBlock + BLOCK_SIZE){
+        currOffset = currOffset + sizeof(struct wfs_dentry);
+    }
+
+    if(currOffset >= startBlock + BLOCK_SIZE){
+        printf("ERROR: space not found for dirEntry");
+        return -1;
+    }
+
+    //return offset you found the open space
+    return currOffset;
+}
 
 //returns the actual path
+//TODO: debug seg fault between 1.3 & 1.4!
 char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*skipbit){
    // printf("running helper function get_path_inode\n\n");
-
-    if(strlen(path) == 1){
+    printf("starting get_path_inode\n");
+    if(strcmp("/", path) == 0){
         return disk + superblock->i_blocks_ptr; //return root 
     }
 
@@ -33,23 +61,28 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
     int found = 0;
     struct wfs_inode currentInode;
     char* currentInodeAddr = disk + superblock->i_blocks_ptr; //starting from root inode 
+    struct wfs_dentry dirEntry;
     /////////////////////////////////////////////////////////////// 
-    
+
+    printf("fault1\n");
     //find target file/dir
     while(token){ 
         //printf("file to find: %s       \n ", token);
-    
+        printf("1.1\n");
         //find directory entry of currentInode
-        memcpy(&currentInode, currentInodeAddr, sizeof(struct wfs_inode));
+        memcpy(&currentInode, currentInodeAddr, sizeof(struct wfs_inode)); 
+        printf("1.2\n");
         for (int i = 0; i < N_BLOCKS; i++){
             if(currentInode.blocks[i]){ 
-                struct wfs_dentry dirEntry;
+                printf("1.3\n");
                 memcpy(&dirEntry, disk + currentInode.blocks[i], sizeof(struct wfs_dentry));
+                printf("1.4\n");
                 if (strcmp(dirEntry.name, token) == 0){
                     found = 1;
                     currentInodeAddr = disk + superblock->i_blocks_ptr + (dirEntry.num * BLOCK_SIZE);
                     break;
                 }
+                printf("1.5\n");
             }
         }
 
@@ -62,7 +95,7 @@ char* get_path_inode(char * disk, struct wfs_sb * superblock, char * path, int*s
         found = 0;
         token = strtok(NULL, "/");
     }
-
+    printf("fault2\n");
     printf("DONE: get path inode finished\n");  
     return currentInodeAddr;
 }
@@ -82,39 +115,42 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
     strcpy(pathCopy, path);
     pathCopy[strlen(path)] = '\0';
 
+    printf("getattr1: %s\n", path);
     //ptr to start of superblock
     struct wfs_sb superblock;
     memcpy(&superblock, disk, sizeof(struct wfs_sb));
     //struct wfs_sb * ptr = &superblock;
     int skipbit = 0;
 
-        //get the target inode & update time
-        char *tI = get_path_inode(disk, &superblock, pathCopy, &skipbit);
-        if(failedgetparent == -1){
-            failedgetparent = 0;
-            return -ENOENT;
-        }
-        struct wfs_inode targetInode;
-        memcpy(&targetInode, tI, sizeof(struct wfs_inode));
-        time_t current_time;
-        time(&current_time);
-        targetInode.atim = current_time; //only accessed, so only changing access time
-        memcpy(tI, &targetInode, sizeof(struct wfs_inode));
+printf("getattr2: %s\n", path);
+    //get the target inode & update time
+    char *tI = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+    if(failedgetparent == -1){
+        failedgetparent = 0;
+        return -ENOENT;
+    }
+    struct wfs_inode targetInode;
+    memcpy(&targetInode, tI, sizeof(struct wfs_inode));
+    time_t current_time;
+    time(&current_time);
+    targetInode.atim = current_time; //only accessed, so only changing access time
+    memcpy(tI, &targetInode, sizeof(struct wfs_inode));
 
-        //fill in stbuf struct with found target inode
-        stbuf->st_uid = targetInode.uid;
-        stbuf->st_gid = targetInode.gid;
-        stbuf->st_atime = targetInode.atim;
-        stbuf->st_mtime = targetInode.mtim;
-        stbuf->st_mode = targetInode.mode;
-        stbuf->st_size = targetInode.size;
+printf("getattr3: %s\n", path);
+    //fill in stbuf struct with found target inode
+    stbuf->st_uid = targetInode.uid;
+    stbuf->st_gid = targetInode.gid;
+    stbuf->st_atime = targetInode.atim;
+    stbuf->st_mtime = targetInode.mtim;
+    stbuf->st_mode = targetInode.mode;
+    stbuf->st_size = targetInode.size;
 
     printf("DONE: getattr finished\n");     
     return 0; // Return 0 on success
 }
 
 //Make a file 
-//still og mknod unlike mkdir
+//TODO: update mknod to mkdir logic once mkdir works
 static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     //printf("making file using mknod\n");
 
@@ -167,7 +203,7 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     //create and add inode
     struct wfs_inode newFileInode;
     newFileInode.num = index; 
-    newFileInode.size = BLOCK_SIZE; //maybe start w/ 0?
+    newFileInode.size = BLOCK_SIZE; //maybe set to 0
     newFileInode.mode = mode;
     newFileInode.uid = S_ISUID;
     newFileInode.gid = S_ISGID;
@@ -233,8 +269,7 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     //memcpy((off_t)ptr + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize);
 
     //update data blocks with dir entry, write dir entry to data block in disk
-    char * name = strrchr(path, '/');
-    name++;
+    char * name = basename(pathCopy);
     struct wfs_dentry dirEntry;
     strcpy(dirEntry.name, name); 
     dirEntry.num = newFileInode.num;
@@ -242,10 +277,7 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     //memcpy((off_t)ptr + ptr->d_blocks_ptr + (off_t)(dindex * BLOCK_SIZE), &dirEntry, sizeof(struct wfs_dentry));
     
     //add dir entry to parent inode
-    char * shortened = strrchr(path, '/');
-    int modifiedPathLength = strlen(path) - strlen(shortened) + 1;
-    char * modifiedPath = malloc(sizeof(char) * modifiedPathLength);
-    strncpy(modifiedPath, path, modifiedPathLength); //eliminated last part of string so we have a valid argument for get_path_inode
+    char * modifiedPath = dirname(pathCopy); //eliminated last part of string so we have a valid argument for get_path_inode
 
     char *pI = get_path_inode(disk, &superblock, modifiedPath, &skipbit);
     if(failedgetparent == -1){ //failure case
@@ -261,7 +293,7 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
     for(int i = 0; i < N_BLOCKS; i++){ 
         if(!parentInode.blocks[i] && !placed){
             parentInode.blocks[i] = ptr->d_blocks_ptr + (d2index * BLOCK_SIZE); //d2index is correct? -- confirm if unsure
-            placed++;
+            placed=1;
         }
         else if(parentInode.blocks[i]){
             memcpy(&existingEntry, disk + parentInode.blocks[i], sizeof(struct wfs_dentry));
@@ -288,7 +320,7 @@ static int wfs_mknod(const char* path, mode_t mode, dev_t rdev){
 
 //Create a directory with the given name. The directory permissions are encoded in mode. 
 //See mkdir(2) for details. This function is needed for any reasonable read/write filesystem.
-//very modified-----!!!!
+//TODO: debug till tests pass
 static int wfs_mkdir(const char* path, mode_t mode){
     printf("WFS_MKDIR: using mkdir\n");
 
@@ -305,7 +337,7 @@ static int wfs_mkdir(const char* path, mode_t mode){
     int skipbit = 0;
     ///////////////////////////////////////////
 
-
+    printf("mkdir1\n");
     //1. attempt to add new directory (updating inode bitmap, inodes)
 
     //check new file to be added can be added (check inode bitmap for adequate space).
@@ -335,6 +367,7 @@ static int wfs_mkdir(const char* path, mode_t mode){
         return -ENOSPC;
     }
 
+printf("mkdir2\n");
     //write back to disk 
     //memcpy((off_t)ptr + ptr->i_bitmap_ptr, bitmap, sizeof(int) * size);
 
@@ -342,6 +375,7 @@ static int wfs_mkdir(const char* path, mode_t mode){
     struct wfs_inode newDirInode;
     newDirInode.num = index; 
     newDirInode.size = BLOCK_SIZE; 
+    mode = __S_IFDIR | S_IRWXO;
     newDirInode.mode = mode;
     newDirInode.uid = S_ISUID;
     newDirInode.gid = S_ISGID;
@@ -350,67 +384,85 @@ static int wfs_mkdir(const char* path, mode_t mode){
     newDirInode.atim = current_time; 
     newDirInode.mtim = current_time; 
     newDirInode.ctim = current_time;
+    memset(newDirInode.blocks, 0, sizeof(off_t) * N_BLOCKS);
     
     //(debugging purposes: indirect logic went here. Obv not needed tho)
    
     // memcpy((off_t)ptr + ptr->i_blocks_ptr + (off_t)(index * BLOCK_SIZE), &newFile, sizeof(struct wfs_inode));
-
+printf("mkdir3\n");
     //2. update parent directory with our new directory. (updating data bitmap and datablocks)
     int dsize = ptr->num_data_blocks / 32;
     int dbitmap[dsize];
     memcpy(dbitmap, disk + ptr->d_bitmap_ptr, sizeof(int) * dsize);
 
-    int d2index = -1; //index where dir entry of our new file goes
-    int d2rowIndex= 0;
-    int d2colIndex = 0;
-    //check there is space in data bitmap
-    for(int i = 0; i < ptr->num_data_blocks; i++){
-        //printf("iteration: %i\n", i);
-        //checking if ith bit is 0. Set to 1 if it is
-        if(i%32 == 0 && i != 0){
-            d2rowIndex++;
-            d2colIndex = 0;
-        }
-        if(!(dbitmap[d2rowIndex] & (1 << d2colIndex))){
-            d2index = i;
-            dbitmap[d2rowIndex] |= (1 << d2colIndex);
-            break;
-        }
-        d2colIndex++;
-    }
-
-    //enforcing that we have found 1 free bit(data block) to place dir entry
-    if(d2index == -1){
-        return -ENOSPC;
-    }
+    //ERROR CASE (if valid space not found within the data block consisting of inode and dirEntries): Implement if needed
 
     //write back to disk
     //memcpy((off_t)ptr + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize);
-
+printf("mkdir4\n");
     //update data blocks with dir entry, write dir entry to data block in disk
     char * name = basename(pathCopy);
     struct wfs_dentry dirEntry;
     strcpy(dirEntry.name, name); 
     dirEntry.num = newDirInode.num;
-
+    int dbitmapChange = 0;
     //memcpy((off_t)ptr + ptr->d_blocks_ptr + (off_t)(dindex * BLOCK_SIZE), &dirEntry, sizeof(struct wfs_dentry));
     
     //add dir entry to parent inode
     char * modifiedPath = dirname(pathCopy);
+    printf("WFS_MKDIR: path being passed: %s\n", pathCopy);
+    printf("WFS_MKDIR: directory of path: %s\n", modifiedPath);
     char *pI = get_path_inode(disk, &superblock, modifiedPath, &skipbit);
     if(failedgetparent == -1){ //failure case
         failedgetparent = 0;    
         return -ENOENT;
     }    
+    printf("mkdir5\n");
     struct wfs_inode parentInode; //acquiring parent inode
     memcpy(&parentInode, pI, sizeof(struct wfs_inode));
+
+    //find spot for direntry to go
+    off_t newDirEntry = getValidSpace(&parentInode);
+    if(newDirEntry == -1){ //if exact spot was not found 
+        printf("ERROR: failed finding new space for direntry\n\n");
+        return 1;
+    }
+    else if(newDirEntry == -2){ //new datablock for our dirEntry (adding first direntry for an inode)
+        dbitmapChange = 1;
+        //update data bitmap, find data block index, update dirEntryOffsets array
+            int d2index = -1; //index where dir entry of our new file goes
+            int d2rowIndex= 0;
+            int d2colIndex = 0;
+            //check there is space in data bitmap
+            for(int i = 0; i < ptr->num_data_blocks; i++){
+                //printf("iteration: %i\n", i);
+                //checking if ith bit is 0. Set to 1 if it is
+                if(i%32 == 0 && i != 0){
+                    d2rowIndex++;
+                    d2colIndex = 0;
+                }
+                if(!(dbitmap[d2rowIndex] & (1 << d2colIndex))){
+                    d2index = i;
+                    dirEntryOffsets[parentInode.num] = superblock.d_blocks_ptr + (off_t)(d2index * BLOCK_SIZE);
+                    newDirEntry = dirEntryOffsets[parentInode.num];
+                    dbitmap[d2rowIndex] |= (1 << d2colIndex);
+                    break;
+                }
+                d2colIndex++;
+            }
+
+            //enforcing that we have found 1 free bit(data block) to place dir entry
+            if(d2index == -1){
+                return -ENOSPC;
+            }
+    }
 
     //checking file or dir does not already exist, adding new dir entry if possible
     struct wfs_dentry existingEntry; 
     int placed = 0;
     for(int i = 0; i < N_BLOCKS; i++){ 
         if(!parentInode.blocks[i] && !placed){
-            parentInode.blocks[i] = ptr->d_blocks_ptr + (d2index * BLOCK_SIZE); //d2index is correct? -- confirm if unsure
+            parentInode.blocks[i] = newDirEntry; 
             placed++;
         }
         else if(parentInode.blocks[i]){
@@ -424,12 +476,16 @@ static int wfs_mkdir(const char* path, mode_t mode){
         return -ENOSPC; //if no space
     }
 
+printf("mkdir6\n");
     memcpy(disk + ptr->i_bitmap_ptr, bitmap, sizeof(int) * size); //writing inode bitmap
     memcpy(disk + ptr->i_blocks_ptr + (index * BLOCK_SIZE), &newDirInode, sizeof(struct wfs_inode)); //writing new directory inode 
-    memcpy(disk + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize); //writing data bitmap
-    memcpy(disk + ptr->d_blocks_ptr + (d2index * BLOCK_SIZE), &dirEntry, sizeof(struct wfs_dentry)); //writing new dir entry to datablocks
+    if(dbitmapChange){
+        memcpy(disk + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize); //writing data bitmap
+    }
+    memcpy(disk + newDirEntry, &dirEntry, sizeof(struct wfs_dentry)); //writing new dir entry to datablocks
     memcpy(pI, &parentInode, sizeof(struct wfs_inode)); //writing parent inode
 
+    printf("WFS_MKDIR: COMPLETE\n\n\n");
     return 0;
 }
 
@@ -441,103 +497,95 @@ static int wfs_unlink(const char* path){
 }
 
 //Remove the given directory. This should succeed only if the directory is empty (except for "." and "..").
-//MODEL FUNCTION!!!!
 //update time with accesses?
-//is our bitmap correct?
-//
 static int wfs_rmdir(const char* path){
+    //setup////////////
+    ////////////////////////
+    struct wfs_sb superblock; 
+    memcpy(&superblock, disk, sizeof(struct wfs_sb));
+    struct wfs_sb * ptr = &superblock;
+    int skipbit = 0;
+    char *pathCopy = malloc(strlen(path) + 1); 
+    strcpy(pathCopy, path);
+    pathCopy[strlen(path)] = '\0';    
+    char * modifiedPath = dirname(pathCopy);
+    char* a1 = get_path_inode(disk, ptr, modifiedPath, &skipbit);
+    struct wfs_inode parentInode;
+    memcpy(&parentInode, a1, sizeof(struct wfs_inode));
+    char * name = basename(pathCopy);
+    int found = -1;
+    struct wfs_dentry dEntry;
+    //////////////////////////// //////////////////////////// ////////////////////////////
 
-    // //setup //////////////////////////// //////////////////////////// ////////////////////////////
-    // struct stat fileStat;
-    // int fd = open(diskImage, O_RDWR);
-    // if(fd == -1){
-    //     perror("opening file");
-    //     return 1;
-    // }
-    // if(fstat(diskImage, &fileStat) < 0){  //issue with stat? fstat instead?
-    //     printf("error in stat\n");
-    //     return 1;
-    // }
+    //find directory inode.
+    for(int i = 0; i < N_BLOCKS; i++){
+        if(parentInode.blocks[i]){
+            char *inodeOffset = disk + parentInode.blocks[i];
+            memcpy(&dEntry, inodeOffset, sizeof(struct wfs_dentry));
+            if(strcmp(dEntry.name, name) == 0){
+                found = i;
+                break;
+            }
+        }
+    }
 
-    // //new approach to pointer arithmetic...? - CHECK
-    // char * disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    // struct wfs_sb superblock; 
-    // memcpy(&superblock, disk, sizeof(struct wfs_sb));
-    // struct wfs_sb * ptr = &superblock;
-    // char* a1 = get_parent_inode(path);  //CHANGE FUNCTION TO RETURN A CHAR*, assuming here that it returns a char ptr
-    // //////////
+    if(found == -1){
+        printf("ERROR: dir entry not found");
+        return -ENOENT;
+    }
 
-    // struct wfs_inode parentInode;
-    // memcpy(&parentInode, a1, sizeof(struct wfs_inode));
-    // char * name = strrchr(path, '/');
-    // name++;
-    // int found = -1;
-    // struct wfs_dentry dEntry;
-    // //////////////////////////// //////////////////////////// ////////////////////////////
+    struct wfs_inode currInode;
+    char *currInodeAddr = disk + ptr->i_blocks_ptr + (dEntry.num * BLOCK_SIZE);
+    memcpy(&currInode, currInodeAddr, sizeof(struct wfs_inode));
 
-    // //find directory inode.
-    // for(int i = 0; i < N_BLOCKS; i++){
-    //     char *inodeOffset = disk + parentInode.blocks[i];
-    //     if(!inodeOffset){
-    //         continue;
-    //     }
-    //     memcpy(&dEntry, inodeOffset, sizeof(struct wfs_dentry));
-    //     if(strcmp(dEntry.name, name) == 0){
-    //         found = i;
-    //         break;
-    //     }
-    // }
+    //check that all blocks in array are empty. Throw error if not?
+    for(int i = 0; i < N_BLOCKS; i++){
+        if(currInode.blocks[i]){
+            printf("ERROR: directory is not empty\n\n\n");
+            return 1;
+        }
+    }
 
-    // if(found == -1){
-    //     return -ENOENT;
-    // }
+    //in case it wasn't already, set the value to -1 in dirEntryOffsets (we don't need the spot anymore)
+    dirEntryOffsets[currInode.num] = -1;
 
-    // struct wfs_inode currInode;
-    // char *currInodeAddr = disk + ptr->i_blocks_ptr + (dEntry.num * BLOCK_SIZE);
-    // memcpy(&currInode, currInodeAddr, sizeof(struct wfs_inode));
+    //within parent dir, check if its empty
+    int emptybit = 0;
+       for(int i = 0; i < N_BLOCKS; i++){
+        if(parentInode.blocks[i]){
+            emptybit = 1;
+            break;
+        }
+    }
+    if(!emptybit){
+        
+    }
 
-    // //check that all blocks in array are empty. Throw error if not?
-    // for(int i = 0; i < N_BLOCKS; i++){
-    //     if(currInode.blocks[i]){
-    //         printf("ERROR: directory is not empty\n\n\n");
-    //         return 1;
-    //     }
-    // }
-   
-    // //find data block index
-    // char *dbStart = disk + ptr->d_blocks_ptr;
-    // int dbIndex = -1;
-    // for(int i = 0; i < ptr->num_data_blocks; i++){
-    //     if(dbStart == disk + parentInode.blocks[found]){
-    //         dbIndex = i;
-    //         break;
-    //     }
-    //     dbStart = dbStart + BLOCK_SIZE;
-    // }
+    //clear the space it takes in the inodes
+    memset(currInodeAddr, 0, sizeof(struct wfs_inode)); //its inode itself
+    memset(disk + parentInode.blocks[found], 0, sizeof(struct wfs_dentry)); //removing directory entry of it in parent
+    parentInode.blocks[found] = 0;
+    memcpy(disk + ptr->i_blocks_ptr + (BLOCK_SIZE * parentInode.num), &parentInode, sizeof(struct wfs_inode)); //updating parent inode
 
-    // if(dbIndex == -1){
-    //     printf("ERROR: did not work\n\n");
-    // }
+    //update indode bitmap
+    int size = ptr->num_inodes / 32;
+    int bitmap[size];
+    memcpy(bitmap, disk + ptr->i_bitmap_ptr, sizeof(int) * size); //current dir 
+    bitmap[currInode.num/32] &= ~(1 << (currInode.num % 32)); //setting to 0. CHECK if correct
+    memcpy(disk + ptr->i_bitmap_ptr, bitmap, sizeof(int) * size);
 
-    // //clear the space it takes in the inodes
-    // memset(currInodeAddr, 0, sizeof(struct wfs_inode)); //its inode itself
-    // memset(disk + parentInode.blocks[found], 0, sizeof(struct wfs_dentry)); //removing directory entry of it in parent
-    // parentInode.blocks[found] = 0;
-    // memcpy(disk + ptr->i_blocks_ptr + (BLOCK_SIZE * parentInode.num), &parentInode, sizeof(struct wfs_inode)); //updating parent inode
+    //update data bitmap
+    if(!emptybit){
+        off_t diff = dirEntryOffsets[parentInode.num] - ptr->d_blocks_ptr;
+        int dbIndex = (diff/BLOCK_SIZE) - 1;
+        int dsize = ptr->num_data_blocks / 32;
+        int dbitmap[dsize];
+        memcpy(dbitmap, disk + ptr->d_bitmap_ptr, sizeof(int) * dsize); //for parent
+        dbitmap[dbIndex/32] &= ~(1 << (dbIndex % 32)); //setting to 0, CHECK
+        memcpy(disk + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * dsize);
+        dirEntryOffsets[parentInode.num] = -1;
+    }
 
-    // //update bitmaps
-    // int size = ceil(ptr->num_inodes / 32);
-    // int bitmap[size];
-    // int dbitmap[size];
-    // memcpy(bitmap, disk + ptr->i_bitmap_ptr, sizeof(int) * size); //current dir 
-    // memcpy(dbitmap, disk + ptr->d_bitmap_ptr, sizeof(int) * size); //for parent 
-    // bitmap[currInode.num/32] &= ~(1 << (currInode.num % 32)); //setting to 0. CHECK if correct
-    // dbitmap[dbIndex/32] &= ~(1 << (dbIndex % 32)); //setting to 0, CHECK
-    // memcpy(disk + ptr->i_bitmap_ptr, bitmap, sizeof(int) * size);
-    // memcpy(disk + ptr->d_bitmap_ptr, dbitmap, sizeof(int) * size);
-
-    // //write back to disk
-    // close(fd);
     return 0;
 }
 
@@ -588,5 +636,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     disk = mmap(NULL, fileStat.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    struct wfs_sb superblock;
+    memcpy(&superblock, disk, sizeof(struct wfs_sb));
+
+    dirEntryOffsets = malloc(sizeof(off_t) * superblock.num_inodes);
+    memset(dirEntryOffsets, -1, sizeof(off_t) * superblock.num_inodes);
+
     return fuse_main(argc - 1, argv + 1, &ops, NULL);
 }
