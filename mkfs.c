@@ -117,6 +117,7 @@ int main(int argc, char * argv[]){
     rootInode.atim = current_time; 
     rootInode.mtim = current_time; 
     rootInode.ctim = current_time;
+    memset(rootInode.blocks, 0, sizeof(off_t) * N_BLOCKS);
 
     //adding root inode to array 
     memcpy(disk + superblock.i_blocks_ptr, &rootInode, sizeof(struct wfs_inode));
