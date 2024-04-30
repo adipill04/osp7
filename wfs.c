@@ -920,107 +920,285 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
     struct wfs_sb superblock;
     memcpy(&superblock, disk, sizeof(struct wfs_sb));
     char *fileInodeAddr = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+    if(failedgetparent == -1){
+        failedgetparent = 0;
+        return -ENOENT;
+    }
     struct wfs_inode fileInode;
     memcpy(&fileInode, fileInodeAddr, sizeof(struct wfs_inode));
     ////////////////////////////////////////////////
 
-    //check if offset is greater than the file itself
-    if(offset >= fileInode.size){
-        return 0; //or -ENOSPC?
+    if(fileInode.size <= offset){
+        return 0;
     }
 
-    //place offset in correct position in our data blocks
-    int startBlockIndex = offset / BLOCK_SIZE;
-    off_t startOffset = offset - (BLOCK_SIZE * startBlockIndex); //where specifically offset goes
-    off_t offsetCopy = offset;
+    int readBytes = 0;
+    int lastBlock = (size + offset) / BLOCK_SIZE;
+
+    if((size + offset) % BLOCK_SIZE == 0){
+        lastBlock -= 1;
+    }
+
+    int start = offset / BLOCK_SIZE;
+    for(int i = start; i <= lastBlock; i++){
+        if(fileInode.size <= i * BLOCK_SIZE){
+            break;
+        }
+
+        off_t currBlock;
+        if(IND_BLOCK <= i){
+            currBlock = fileInode.blocks[IND_BLOCK] + (i - IND_BLOCK) * sizeof(off_t);
+        }
+        else{
+            currBlock = fileInode.blocks[i]; //with disk now!
+        }
+
+        int beg = 0;
+        int finish = BLOCK_SIZE;
+
+        if(offset / BLOCK_SIZE == i){
+            beg = offset % BLOCK_SIZE;
+        }
+
+        if((size + offset) / BLOCK_SIZE == i){
+            finish = (size + offset) % BLOCK_SIZE;
+        }
+
+        memcpy(readBytes + buf, disk + currBlock + beg, finish - beg); 
+        readBytes += finish - beg;
+    }
+    return readBytes;
+
+    // //check if offset is greater than the file itself
+    // if(offset >= fileInode.size){
+    //     return 0; //or -ENOSPC?
+    // }
+
+    // //place offset in correct position in our data blocks
+    // int startBlockIndex = offset / BLOCK_SIZE;
+    // off_t startOffset = offset - (BLOCK_SIZE * startBlockIndex); //where specifically offset goes
+    // off_t offsetCopy = offset;
     
-    if(startBlockIndex <= IND_BLOCK){
-        //starting from startOffset, read byte by byte into the buffer. Make sure to transfer to indirect logic when IND_BLOCK
-        //index is reached. Stop the entire while loop once bytes read == size
-        off_t bytesRead = 0;
-        while(bytesRead < size && offsetCopy < fileInode.size){
-            if(startOffset % BLOCK_SIZE == 0 && bytesRead > 0){
-                startBlockIndex++;
-                startOffset = 0;
-            }
-            if(startBlockIndex == IND_BLOCK){
-                break;
-            }
-            else{
-                memcpy(buf + bytesRead, disk + fileInode.blocks[startBlockIndex] + startOffset, sizeof(char));
-            }
-            bytesRead++;
-            startOffset++;
-            offsetCopy++;
-        }
+    // if(startBlockIndex <= IND_BLOCK){
+    //     //starting from startOffset, read byte by byte into the buffer. Make sure to transfer to indirect logic when IND_BLOCK
+    //     //index is reached. Stop the entire while loop once bytes read == size
+    //     off_t bytesRead = 0;
+    //     while(bytesRead < size && offsetCopy < fileInode.size){
+    //         if(startOffset % BLOCK_SIZE == 0 && bytesRead > 0){
+    //             startBlockIndex++;
+    //             startOffset = 0;
+    //         }
+    //         if(startBlockIndex == IND_BLOCK){
+    //             break;
+    //         }
+    //         else{
+    //             memcpy(buf + bytesRead, disk + fileInode.blocks[startBlockIndex] + startOffset, sizeof(char));
+    //         }
+    //         bytesRead++;
+    //         startOffset++;
+    //         offsetCopy++;
+    //     }
         
-        off_t currIndOffset = 0;
-        off_t indBlock;
-        if(startBlockIndex == IND_BLOCK && fileInode.blocks[IND_BLOCK] != 0){
-            for(int i = 0; i < BLOCK_SIZE / sizeof(off_t); i++){ //BLOCK_SIZE
-                memcpy(&indBlock, disk + fileInode.blocks[startBlockIndex] + currIndOffset, sizeof(off_t));
-                if(indBlock){
-                    int j = 0;
-                    while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
-                        memcpy(buf + bytesRead, disk + indBlock + j, sizeof(char));
-                        bytesRead++;
-                        offsetCopy++;
-                        j++;
-                    } 
-                }
-                currIndOffset = currIndOffset + sizeof(off_t);
-            }
-        }
-        return bytesRead;
-    } 
-    else{       //DEBUG: if you need to debug, it's probably from here
-        //put offset in precise position
-        off_t totalDirectBytes = (BLOCK_SIZE * IND_BLOCK);
-        off_t remainingOffset = offset - totalDirectBytes;
-        off_t currBlockIndex = 0;
-        int countIndex = 0;
-        for(int i = totalDirectBytes; i < totalDirectBytes + remainingOffset; i++){
-            if(i % BLOCK_SIZE == 0 && i != totalDirectBytes){
-                currBlockIndex += sizeof(off_t);
-                countIndex++;
-            }
-        }
-        off_t inBlockOffset = remainingOffset - (BLOCK_SIZE * countIndex);
+    //     off_t currIndOffset = 0;
+    //     off_t indBlock;
+    //     if(startBlockIndex == IND_BLOCK && fileInode.blocks[IND_BLOCK] != 0){
+    //         for(int i = 0; i < BLOCK_SIZE / sizeof(off_t); i++){ //BLOCK_SIZE
+    //             memcpy(&indBlock, disk + fileInode.blocks[startBlockIndex] + currIndOffset, sizeof(off_t));
+    //             if(indBlock){
+    //                 int j = 0;
+    //                 while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
+    //                     memcpy(buf + bytesRead, disk + indBlock + j, sizeof(char));
+    //                     bytesRead++;
+    //                     offsetCopy++;
+    //                     j++;
+    //                 } 
+    //             }
+    //             currIndOffset = currIndOffset + sizeof(off_t);
+    //         }
+    //     }
+    //     return bytesRead;
+    // } 
+    // else{       //DEBUG: if you need to debug, it's probably from here
+    //     //put offset in precise position
+    //     off_t totalDirectBytes = (BLOCK_SIZE * IND_BLOCK);
+    //     off_t remainingOffset = offset - totalDirectBytes;
+    //     off_t currBlockIndex = 0;
+    //     int countIndex = 0;
+    //     for(int i = totalDirectBytes; i < totalDirectBytes + remainingOffset; i++){
+    //         if(i % BLOCK_SIZE == 0 && i != totalDirectBytes){
+    //             currBlockIndex += sizeof(off_t);
+    //             countIndex++;
+    //         }
+    //     }
+    //     off_t inBlockOffset = remainingOffset - (BLOCK_SIZE * countIndex);
 
-        int bit = 1;
-        int j;
-        //READ
-        off_t bytesRead = 0;
-        off_t block;
-        if(fileInode.blocks[IND_BLOCK] != 0){
-            for(int i = currBlockIndex; i < BLOCK_SIZE; i += sizeof(off_t)){
-                memcpy(&block, disk + fileInode.blocks[IND_BLOCK] + currBlockIndex, sizeof(off_t));
-                if(block){
-                    if(bit){
-                        j = inBlockOffset;
-                        bit--;
-                    }
-                    else{
-                        j = 0;
-                    }
-                    while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
-                        memcpy(buf + bytesRead, disk + block + j, sizeof(char));
-                        bytesRead++;
-                        offsetCopy++;
-                        j++;
-                    } 
-                }
-            }
-        }
-        return bytesRead;
-    }
-    return 0;
+    //     int bit = 1;
+    //     int j;
+    //     //READ
+    //     off_t bytesRead = 0;
+    //     off_t block;
+    //     if(fileInode.blocks[IND_BLOCK] != 0){
+    //         for(int i = currBlockIndex; i < BLOCK_SIZE; i += sizeof(off_t)){
+    //             memcpy(&block, disk + fileInode.blocks[IND_BLOCK] + currBlockIndex, sizeof(off_t));
+    //             if(block){
+    //                 if(bit){
+    //                     j = inBlockOffset;
+    //                     bit--;
+    //                 }
+    //                 else{
+    //                     j = 0;
+    //                 }
+    //                 while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
+    //                     memcpy(buf + bytesRead, disk + block + j, sizeof(char));
+    //                     bytesRead++;
+    //                     offsetCopy++;
+    //                     j++;
+    //                 } 
+    //             }
+    //         }
+    //     }
+    //     return bytesRead;
+    // }
+    // return 0;
 }
 
 //As for read above, except that it can't return 0.
-//Q: where should offset go? invalid offset? 
+//TODO: REFACTOR HELLA!!!
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi){
-    
+    ///////////////////////////////////////////////
+    char * pathCopy = malloc(strlen(path) + 1);
+    strcpy(pathCopy, path);
+    int skipbit = 0;
+    struct wfs_sb superblock;
+    memcpy(&superblock, disk, sizeof(struct wfs_sb));
+    char *fileInodeAddr = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+    if(failedgetparent == -1){
+        failedgetparent = 0;
+        return -ENOENT;
+    }
+    struct wfs_inode fileInode;
+    memcpy(&fileInode, fileInodeAddr, sizeof(struct wfs_inode));
+    int dsize = superblock.num_data_blocks / 32;
+    int dbitmap[dsize];
+    memcpy(dbitmap, disk + superblock.d_bitmap_ptr, sizeof(int) * dsize);
+    int seven = 7;
+
+    ////////////////////////////////////////////////
+
+    if(fileInode.size < offset){
+        return -ENOSPC;
+    }
+
+    int writtenBytes = 0;
+    int sizeCopy = fileInode.size;
+    int lastBlock = (size + offset) / BLOCK_SIZE;
+    int start = offset / BLOCK_SIZE;
+
+    for(int i = start; i < lastBlock + 1; i++){
+        if(D_BLOCK + (BLOCK_SIZE / sizeof(off_t)) < i){
+            break;
+        }
+            off_t currBlock;//char *currBlock;
+            int beg = 0;
+            int finish = BLOCK_SIZE;
+
+            if(offset / BLOCK_SIZE == i){
+                beg = offset % BLOCK_SIZE;
+            }
+
+            if((size + offset) / BLOCK_SIZE == i){
+                finish = (size + offset) % BLOCK_SIZE;
+            }
+
+            if(i * BLOCK_SIZE >= fileInode.size){
+                //find open data block
+                int drowIndex = 0;
+                int dcolIndex = 0;
+                int dindex = -1; //index of free data block 
+
+                //find open spot on data bitmap, update it
+                for(int i = 0; i < superblock.num_data_blocks; i++){
+                    //checking if ith bit is 0. Set to 1 if it is
+                    if(i%32 == 0 && i != 0){
+                        drowIndex++;
+                        dcolIndex = 0;
+                    }
+                    if(!(dbitmap[drowIndex] & (1 << dcolIndex))){
+                        dindex = i;
+                        dbitmap[drowIndex] |= (1 << dcolIndex);
+                        break;
+                    }
+                    dcolIndex++;
+                }
+                if(dindex == -1){
+                    fileInode.size = sizeCopy;
+                    memcpy(fileInodeAddr, &fileInode, sizeof(struct wfs_inode));
+                    return -ENOSPC;
+                } 
+
+                currBlock = superblock.d_blocks_ptr + (dindex * BLOCK_SIZE);
+                if(i >= seven){
+                    if(i == seven){
+                        //find open data block
+                        int drowIndex2 = 0;
+                        int dcolIndex2 = 0;
+                        int dindex2 = -1; //index of free data block 
+
+                        //find open spot on data bitmap, update it
+                        for(int i = 0; i < superblock.num_data_blocks; i++){
+                            //checking if ith bit is 0. Set to 1 if it is
+                            if(i%32 == 0 && i != 0){
+                                drowIndex2++;
+                                dcolIndex2 = 0;
+                            }
+                            if(!(dbitmap[drowIndex2] & (1 << dcolIndex2))){
+                                dindex2 = i;
+                                dbitmap[drowIndex2] |= (1 << dcolIndex2);
+                                break;
+                            }
+                            dcolIndex2++;
+                        }
+                        if(dindex2 == -1){
+                            fileInode.size = sizeCopy;
+                            memcpy(fileInodeAddr, &fileInode, sizeof(struct wfs_inode));
+                            return -ENOSPC;
+                        }
+                        fileInode.blocks[seven] = superblock.d_blocks_ptr + (dindex2 * BLOCK_SIZE);
+                        memcpy(fileInodeAddr, &fileInode, sizeof(struct wfs_inode));                     
+                    }
+
+                    //CH: (his 481)
+                    memcpy(disk + fileInode.blocks[seven] + (i - seven) * sizeof(off_t), &currBlock, sizeof(off_t));
+                }
+                else{
+                    //CH: (his 484)
+                    fileInode.blocks[i] = currBlock;
+                    memcpy(fileInodeAddr, &fileInode, sizeof(struct wfs_inode));
+                }
+                //currBlock with disk now! (statement here which added currBlock to disk)
+            }
+            else{
+                if(i >= seven){
+                    currBlock = fileInode.blocks[seven] + (i - seven) * sizeof(off_t); //with disk now!
+                }
+                else{
+                    currBlock = fileInode.blocks[i]; //with disk now!
+                }
+            } 
+
+            memcpy(disk + currBlock + beg, buf + writtenBytes, finish - beg);
+            writtenBytes += finish - beg;
+            if(writtenBytes + offset > fileInode.size){
+                sizeCopy = writtenBytes + offset;
+            }
+        }
+
+        fileInode.size = sizeCopy;
+        
+        memcpy(fileInodeAddr, &fileInode, sizeof(struct wfs_inode));
+        memcpy(disk + superblock.d_bitmap_ptr, dbitmap, sizeof(int) * dsize);
+
+        return writtenBytes;
 }
 
 //Return one or more directory entries (struct dirent) to the caller.
@@ -1032,6 +1210,10 @@ static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_
         strcpy(pathCopy, path);
         int skipbit = 0;
         char * currInodeAddr = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+        if(failedgetparent == -1){
+            failedgetparent = 0;
+            return -ENOENT;
+        }
         struct wfs_inode currentInode;
         memcpy(&currentInode, currInodeAddr, sizeof(struct wfs_inode));
         ///////////////////////////////////////
