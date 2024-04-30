@@ -926,7 +926,7 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
 
     //check if offset is greater than the file itself
     if(offset >= fileInode.size){
-        return 0;
+        return 0; //or -ENOSPC?
     }
 
     //place offset in correct position in our data blocks
@@ -962,7 +962,7 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
                 if(indBlock){
                     int j = 0;
                     while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
-                        memcpy(buf, disk + indBlock + j, sizeof(char));
+                        memcpy(buf + bytesRead, disk + indBlock + j, sizeof(char));
                         bytesRead++;
                         offsetCopy++;
                         j++;
@@ -972,14 +972,47 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
             }
         }
         return bytesRead;
-    }
-    else{
-        //within ind block, calculate which block (off_t value) to access
-        int startIndexFromInd = startBlockIndex - IND_BLOCK;
-        off_t 
+    } 
+    else{       //DEBUG: if you need to debug, it's probably from here
+        //put offset in precise position
+        off_t totalDirectBytes = (BLOCK_SIZE * IND_BLOCK);
+        off_t remainingOffset = offset - totalDirectBytes;
+        off_t currBlockIndex = 0;
+        int countIndex = 0;
+        for(int i = totalDirectBytes; i < totalDirectBytes + remainingOffset; i++){
+            if(i % BLOCK_SIZE == 0 && i != totalDirectBytes){
+                currBlockIndex += sizeof(off_t);
+                countIndex++;
+            }
+        }
+        off_t inBlockOffset = remainingOffset - (BLOCK_SIZE * countIndex);
 
-        //precisely put your starting point there , and read byte by byte until complete
-        
+        int bit = 1;
+        int j;
+        //READ
+        off_t bytesRead = 0;
+        off_t block;
+        if(fileInode.blocks[IND_BLOCK] != 0){
+            for(int i = currBlockIndex; i < BLOCK_SIZE; i += sizeof(off_t)){
+                memcpy(&block, disk + fileInode.blocks[IND_BLOCK] + currBlockIndex, sizeof(off_t));
+                if(block){
+                    if(bit){
+                        j = inBlockOffset;
+                        bit--;
+                    }
+                    else{
+                        j = 0;
+                    }
+                    while(bytesRead < size && offsetCopy < fileInode.size && j < BLOCK_SIZE){
+                        memcpy(buf + bytesRead, disk + block + j, sizeof(char));
+                        bytesRead++;
+                        offsetCopy++;
+                        j++;
+                    } 
+                }
+            }
+        }
+        return bytesRead;
     }
     return 0;
 }
@@ -987,65 +1020,42 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
 //As for read above, except that it can't return 0.
 //Q: where should offset go? invalid offset? 
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi){
-    ///////////////////////////////////////////////
-    // char * pathCopy = malloc(strlen(path) + 1);
-    // strcpy(pathCopy, path);
-    // int skipbit = 0;
-    // struct wfs_sb superblock;
-    // memcpy(&superblock, disk, sizeof(struct wfs_sb));
-    // char *fileInodeAddr = get_path_inode(disk, &superblock, pathCopy, &skipbit);
-    // struct wfs_inode fileInode;
-    // memcpy(&fileInode, fileInodeAddr, sizeof(struct wfs_inode));
-    // ////////////////////////////////////////////////
-
-    // //place offset in correct position in our data blocks
-    // int startBlockIndex = offset / BLOCK_SIZE;
-    // off_t startOffset = offset - (BLOCK_SIZE * startBlockIndex); //where specifically offset goes
-    // off_t offsetCopy = offset;
-    // off_t bytesWritten = 0;
-    // int index = 0;
     
-    // //for loop 
-    // //starting from startOffset, read byte by byte into the buffer. Make sure to transfer to indirect logic when IND_BLOCK
-    // //index is reached. Stop the entire while loop once bytes read == size
-    // if(startBlockIndex >= IND_BLOCK){
-    //     while(bytesRead < size && offsetCopy < fileInode.size){
-    //         if(startOffset % BLOCK_SIZE == 0 && bytesRead > 0){
-    //             startBlockIndex++;
-    //             startOffset = 0;
-    //         }
-    //         if(startBlockIndex == IND_BLOCK){
-    //             break;
-    //         }
-    //         else{
-    //             memcpy(buf + bytesRead, disk + fileInode.blocks[startBlockIndex] + startOffset, sizeof(char));
-    //         }
-    //         bytesRead++;
-    //         startOffset++;
-    //         offsetCopy++;
-    //     }
-    // }
-
-
-  
-
-    //begin writing byte by byte from this specific offset. Update dbitmap as you go. Update inode blocks offset as well.
-    //do this until IND_BLOCK
-
-    //check if IND_BLOCK is needed -- then Allocate block if yes. 
-    //for each "off_t" in our indirect. if it is defined simply write byte by byte. 
-    //If its not allocate a block, update dbitmap and ind block, and write to that block
-    
-    //memcpy data bitmaps, curr inode
-    return 0;
 }
 
-//Return one or more directory entries (struct dirent) to the caller. This is one of the most complex FUSE functions. 
-//It is related to, but not identical to, the readdir(2) and getdents(2) system calls, and the readdir(3) library function. 
-//Because of its complexity, it is described separately below. Required for essentially any filesystem, 
-//since it's what makes ls and a whole bunch of other things work.
+//Return one or more directory entries (struct dirent) to the caller.
 static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi){
-    return 0;
+        //////////////////////////////////////////////
+        struct wfs_sb superblock;
+        memcpy(&superblock, disk, sizeof(struct wfs_sb));
+        char * pathCopy = malloc(strlen(path) + 1);
+        strcpy(pathCopy, path);
+        int skipbit = 0;
+        char * currInodeAddr = get_path_inode(disk, &superblock, pathCopy, &skipbit);
+        struct wfs_inode currentInode;
+        memcpy(&currentInode, currInodeAddr, sizeof(struct wfs_inode));
+        ///////////////////////////////////////
+
+        off_t startBlock = 0;   
+        off_t currOffset = 0;
+        struct wfs_dentry nullEntry = {0};
+        struct wfs_dentry dirEntry;
+        for (int i = 0; i < N_BLOCKS; i++){
+            if(currentInode.blocks[i]){ 
+                startBlock = currentInode.blocks[i];
+                currOffset = startBlock;
+                while(currOffset < startBlock + BLOCK_SIZE){
+                    if(memcmp(disk + currOffset, &nullEntry, sizeof(struct wfs_dentry)) != 0){
+                        memcpy(&dirEntry, disk + currOffset, sizeof(struct wfs_dentry));
+                        filler(buf, dirEntry.name, NULL, 0);
+                    }
+                    currOffset = currOffset + sizeof(struct wfs_dentry);
+                }
+            }
+        }
+        filler(buf, "..", NULL, 0);
+        filler(buf, ".", NULL, 0);
+        return 0;
 }
 
 static struct fuse_operations ops = {
